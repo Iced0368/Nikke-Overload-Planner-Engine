@@ -1,5 +1,13 @@
 # Nikke Overload Planner Ex
 
+<img width="891" height="138" alt="배너" src="https://github.com/user-attachments/assets/61edeee6-b9aa-4fe4-b617-9c248bcecff5" />  
+
+<br/>
+
+https://iced0368.github.io/Nikke-Overload-Planner-Ex/
+
+<br/>
+
 니케 오버로드 옵션 세팅에서 현재 상태를 기준으로 목표 조합까지의 기대 소모량과 최적 리롤 행동을 계산하는 웹 플래너입니다.
 
 이 프로젝트는 단순 조합 나열기가 아니라, 각 상태에서 어떤 행동이 가장 유리한지 동적 계획법으로 계산한 뒤, 필요하면 몬테카를로 시뮬레이션으로 결과를 교차 검증합니다.
