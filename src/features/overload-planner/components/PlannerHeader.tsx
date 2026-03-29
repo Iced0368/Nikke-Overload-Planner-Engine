@@ -2,7 +2,7 @@ export function PlannerHeader() {
   return (
     <section className="hero-panel">
       <div className="hero-copy">
-        <p className="eyebrow">Nikke Overload Planner Ex</p>
+        <p className="eyebrow">NOPE • Nikke Overload Planner Engine</p>
         <h1>오버로드 최적화 플래너</h1>
         <p className="hero-note">현재 상태 기준 기대 소모량과 권장 리롤 행동을 빠르게 확인합니다.</p>
       </div>
