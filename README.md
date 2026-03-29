@@ -69,6 +69,30 @@ npm run preview
 npm run lint
 ```
 
+## GitHub Pages 배포
+
+이 저장소는 GitHub Actions로 GitHub Pages에 자동 배포되도록 구성되어 있습니다.
+
+### 배포 방식
+
+- main 브랜치에 푸시하면 자동으로 빌드 후 배포
+- Actions 탭에서 수동 실행도 가능
+- 배포 대상 URL: https://iced0368.github.io/Nikke-Overload-Planner/
+
+### 최초 1회 설정
+
+GitHub 저장소의 Settings > Pages에서 Build and deployment의 Source가 GitHub Actions로 설정되어 있는지만 확인하면 됩니다.
+
+### 배포 흐름
+
+```bash
+git add .
+git commit -m "Deploy setup"
+git push origin main
+```
+
+푸시 후 GitHub 저장소의 Actions 탭에서 Deploy to GitHub Pages 워크플로가 성공하면 Pages 주소로 바로 접속할 수 있습니다.
+
 ## 사용 방법
 
 ### 1. 현재 상태 입력
