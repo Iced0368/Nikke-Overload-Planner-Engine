@@ -20,7 +20,18 @@ export function CostWeightsSection({ lockKeysPerModule, onLockKeysPerModuleChang
       <div className="cost-weight-card">
         <div className="cost-weight-grid">
           <label className="cost-weight-slider-block">
-            <span className="ingame-field-label">모듈 1개 = 락키 몇 개</span>
+            <span className="cost-weight-label-row">
+              <span className="ingame-field-label">모듈 1개 = 락키 몇 개</span>
+              <span className="start-lock-tooltip-shell cost-weight-tooltip-shell">
+                <button type="button" className="start-lock-info-button" aria-label="비용 가치 설명 보기">
+                  i
+                </button>
+                <span className="start-lock-tooltip" role="tooltip">
+                  값이 작을수록 락키를 더 아끼는 방향으로 계산하고, 값이 클수록 락키를 더 적극적으로 사용하는 방향으로
+                  계산합니다.
+                </span>
+              </span>
+            </span>
             <input
               className="weight-slider"
               type="range"

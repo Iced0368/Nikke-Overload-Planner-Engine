@@ -558,6 +558,31 @@
   gap: 0.45rem;
 }
 
+.cost-weight-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.cost-weight-tooltip-shell .start-lock-tooltip {
+  left: calc(100% + 0.55rem);
+  right: auto;
+  transform: translateY(-50%) translateX(-0.2rem);
+}
+
+.cost-weight-tooltip-shell .start-lock-tooltip::after {
+  left: -0.32rem;
+  right: auto;
+  border-top: 1px solid rgba(245, 146, 79, 0.24);
+  border-right: 0;
+  border-left: 1px solid rgba(245, 146, 79, 0.24);
+}
+
+.cost-weight-tooltip-shell:hover .start-lock-tooltip,
+.cost-weight-tooltip-shell:focus-within .start-lock-tooltip {
+  transform: translateY(-50%) translateX(0);
+}
+
 .weight-slider {
   width: 100%;
   margin: 0;
