@@ -1,8 +1,10 @@
 import "./App.css";
 import "./features/overload-planner/styles/overloadPlanner.css";
 import {
+  BudgetOptimizationSection,
   CostWeightsSection,
   PlannerHeader,
+  PlannerModeSection,
   PlannerResultPanel,
   StartStateSection,
   TargetGradesSection,
@@ -12,6 +14,7 @@ import {
 
 function App() {
   const {
+    plannerMode,
     startState,
     startModuleLocks,
     lockKeysPerModule,
@@ -25,13 +28,21 @@ function App() {
     hasStaleResult,
     binaryStartState,
     currentStateValue,
+    forcedLockAlternatives,
     detailedSimulationResult,
     simulationError,
     isSimulationRunning,
+    moduleBudget,
+    budgetOptimizationResult,
+    budgetOptimizationError,
+    isBudgetOptimizationRunning,
+    hasStaleBudgetOptimization,
     updateStartStateSlot,
     updateStartStateGrade,
     updateStartModuleLock,
     updateLockKeysPerModule,
+    updateModuleBudget,
+    updatePlannerMode,
     updateTargetStateSlot,
     updateTargetGrade,
     addTargetState,
@@ -39,12 +50,33 @@ function App() {
     addTargetStatePermutations,
     removeTargetState,
     runOptimizer,
+    runBudgetOptimization,
     runDetailedSimulation,
   } = useOverloadPlanner();
 
   const isOptimizeButtonDisabled = isRunning || !needsOptimization;
   const optimizeButtonLabel = isRunning ? "계산 중..." : needsOptimization ? "최적화 실행" : "최적화 완료됨";
   const optimizeButtonStateClass = isRunning ? "is-running" : needsOptimization ? "is-ready" : "is-complete";
+  const needsBudgetOptimization = hasStaleBudgetOptimization || !budgetOptimizationResult;
+  const isBudgetButtonDisabled = isBudgetOptimizationRunning || isRunning || !needsBudgetOptimization;
+  const isClassicMode = plannerMode === "classic";
+  const activeRunHandler = isClassicMode ? runOptimizer : runBudgetOptimization;
+  const activeRunDisabled = isClassicMode ? isOptimizeButtonDisabled : isBudgetButtonDisabled;
+  const activeRunLabel = isClassicMode
+    ? optimizeButtonLabel
+    : isBudgetOptimizationRunning
+      ? "계산 중..."
+      : needsBudgetOptimization
+        ? "예산 기반 실행"
+        : "예산 계산 완료됨";
+  const activeRunStateClass = isClassicMode
+    ? optimizeButtonStateClass
+    : isBudgetOptimizationRunning
+      ? "is-running"
+      : needsBudgetOptimization
+        ? "is-ready"
+        : "is-complete";
+  const activeError = isClassicMode ? error : null;
 
   return (
     <main className="app-shell">
@@ -55,16 +87,27 @@ function App() {
           <div className="panel-header">
             <h2>입력 설정</h2>
             <button
-              className={`primary-button ${optimizeButtonStateClass}`}
-              onClick={runOptimizer}
-              disabled={isOptimizeButtonDisabled}
+              className={`primary-button ${activeRunStateClass}`}
+              onClick={activeRunHandler}
+              disabled={activeRunDisabled}
             >
               <span className="button-content">
                 <span className="button-icon" aria-hidden="true">
                   <svg viewBox="0 0 20 20" focusable="false">
-                    {isRunning ? (
+                    {isClassicMode ? (
+                      isRunning ? (
+                        <path d="M10 3.25a6.75 6.75 0 1 1-4.773 1.977" />
+                      ) : needsOptimization ? (
+                        <>
+                          <path d="M4.25 3.75v12.5" />
+                          <path d="M7.25 5.25 15.75 10l-8.5 4.75Z" />
+                        </>
+                      ) : (
+                        <path d="M4.5 10.25 8 13.75l7.5-7.5" />
+                      )
+                    ) : isBudgetOptimizationRunning ? (
                       <path d="M10 3.25a6.75 6.75 0 1 1-4.773 1.977" />
-                    ) : needsOptimization ? (
+                    ) : hasStaleBudgetOptimization || !budgetOptimizationResult ? (
                       <>
                         <path d="M4.25 3.75v12.5" />
                         <path d="M7.25 5.25 15.75 10l-8.5 4.75Z" />
@@ -74,10 +117,12 @@ function App() {
                     )}
                   </svg>
                 </span>
-                <span>{optimizeButtonLabel}</span>
+                <span>{activeRunLabel}</span>
               </span>
             </button>
           </div>
+
+          <PlannerModeSection mode={plannerMode} onModeChange={updatePlannerMode} />
 
           <StartStateSection
             startState={startState}
@@ -88,10 +133,14 @@ function App() {
             onStartModuleLockChange={updateStartModuleLock}
           />
 
-          <CostWeightsSection
-            lockKeysPerModule={lockKeysPerModule}
-            onLockKeysPerModuleChange={updateLockKeysPerModule}
-          />
+          {isClassicMode ? (
+            <CostWeightsSection
+              lockKeysPerModule={lockKeysPerModule}
+              onLockKeysPerModuleChange={updateLockKeysPerModule}
+            />
+          ) : (
+            <BudgetOptimizationSection moduleBudget={moduleBudget} onModuleBudgetChange={updateModuleBudget} />
+          )}
 
           <TargetStatesSection
             targetStates={targetStates}
@@ -102,16 +151,23 @@ function App() {
             onSlotChange={updateTargetStateSlot}
           />
 
-          {error ? <div className="error-banner">{error}</div> : null}
+          {activeError ? <div className="error-banner">{activeError}</div> : null}
         </div>
 
         <div className="side-column">
           <PlannerResultPanel
+            mode={plannerMode}
             result={result}
             isStale={hasStaleResult}
             isOptimizing={isRunning}
             optimizationProgress={optimizationProgress}
             currentStateValue={currentStateValue}
+            forcedLockAlternatives={forcedLockAlternatives}
+            moduleBudget={moduleBudget}
+            budgetOptimizationResult={budgetOptimizationResult}
+            budgetOptimizationError={budgetOptimizationError}
+            isBudgetOptimizing={isBudgetOptimizationRunning}
+            isBudgetStale={hasStaleBudgetOptimization}
             detailedSimulationResult={detailedSimulationResult}
             simulationError={simulationError}
             isSimulationRunning={isSimulationRunning}

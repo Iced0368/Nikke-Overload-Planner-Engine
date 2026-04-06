@@ -1,4 +1,5 @@
 import { type MonteCarloSimulationSummary } from "../../../lib/overloadMonteCarlo.ts";
+import { type OverloadBudgetOptimizationResult } from "../../../lib/overloadBudgetOptimizer.ts";
 import {
   type OverloadCostWeights,
   type OverloadOptionIds,
@@ -28,7 +29,28 @@ export type SimulateWorkerRequest = {
   costWeights: OverloadCostWeights;
 };
 
-export type PlannerWorkerRequest = OptimizeWorkerRequest | SimulateWorkerRequest;
+export type BudgetSimulateWorkerRequest = {
+  kind: "budget-simulate";
+  requestId: number;
+  startState: OverloadState;
+  result: OverloadBudgetOptimizationResult;
+  targetGrades: OverloadOptionTarget[];
+  costWeights: OverloadCostWeights;
+};
+
+export type BudgetOptimizeWorkerRequest = {
+  kind: "budget-optimize";
+  requestId: number;
+  targetOptionIds: OverloadOptionIds[];
+  targetGrades: OverloadOptionTarget[];
+  moduleBudget: number;
+};
+
+export type PlannerWorkerRequest =
+  | OptimizeWorkerRequest
+  | SimulateWorkerRequest
+  | BudgetOptimizeWorkerRequest
+  | BudgetSimulateWorkerRequest;
 
 export type OptimizeProgressWorkerResponse = {
   kind: "optimize-progress";
@@ -60,9 +82,23 @@ export type SimulateErrorWorkerResponse = {
   message: string;
 };
 
+export type BudgetOptimizeSuccessWorkerResponse = {
+  kind: "budget-optimize-success";
+  requestId: number;
+  result: OverloadBudgetOptimizationResult;
+};
+
+export type BudgetOptimizeErrorWorkerResponse = {
+  kind: "budget-optimize-error";
+  requestId: number;
+  message: string;
+};
+
 export type PlannerWorkerResponse =
   | OptimizeProgressWorkerResponse
   | OptimizeSuccessWorkerResponse
   | OptimizeErrorWorkerResponse
   | SimulateSuccessWorkerResponse
-  | SimulateErrorWorkerResponse;
+  | SimulateErrorWorkerResponse
+  | BudgetOptimizeSuccessWorkerResponse
+  | BudgetOptimizeErrorWorkerResponse;

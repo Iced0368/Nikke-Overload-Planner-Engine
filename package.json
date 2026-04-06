@@ -1,13 +1,20 @@
 {
   "name": "nikke-overload-planner-engine",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
+    "predev": "npm run build:wasm-optimizer && npm run build:wasm-budget",
     "dev": "vite",
     "build": "npm run build:client && npm run build:ssr && npm run prerender",
+    "prebuild:client": "npm run build:wasm-optimizer && npm run build:wasm-budget",
     "build:client": "tsc -b && vite build",
     "build:ssr": "vite build --ssr src/entry-server.tsx --outDir dist/server",
+    "build:wasm-bench": "node scripts/build-wasm.mjs",
+    "build:wasm-budget": "node scripts/build-budget-wasm.mjs",
+    "build:wasm-optimizer": "node scripts/build-optimizer-wasm.mjs",
+    "bench:montecarlo:wasm": "npm run build:wasm-bench && tsx scripts/benchmarkMonteCarloWasm.ts",
+    "bench:optimizer:wasm": "npm run build:wasm-optimizer && tsx scripts/benchmarkOptimizerWasm.ts",
     "lint": "eslint .",
     "prerender": "node scripts/prerender.mjs",
     "preview": "vite preview"

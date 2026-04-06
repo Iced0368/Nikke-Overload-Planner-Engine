@@ -1,7 +1,8 @@
 /// <reference lib="webworker" />
 
-import { runMonteCarloPolicySimulation } from "../../../lib/overloadMonteCarlo.ts";
-import { optimizeOverloadPolicy } from "../../../lib/overloadPolicyOptimizer.ts";
+import { optimizeOverloadBudgetSuccessWithRuntimeWasm } from "../../../lib/overloadBudgetOptimizerWasm.ts";
+import { runMonteCarloBudgetSimulation, runMonteCarloPolicySimulation } from "../../../lib/overloadMonteCarlo.ts";
+import { optimizeOverloadPolicyWithRuntimeWasm } from "../../../lib/overloadPolicyOptimizerWasm.ts";
 import { type PlannerWorkerRequest, type PlannerWorkerResponse } from "./plannerWorkerMessages";
 
 const workerScope: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope;
@@ -19,7 +20,7 @@ workerScope.onmessage = async (event: MessageEvent<PlannerWorkerRequest>) => {
 
   if (message.kind === "optimize") {
     try {
-      const result = await optimizeOverloadPolicy(
+      const result = await optimizeOverloadPolicyWithRuntimeWasm(
         message.targetOptionIds,
         message.targetGrades,
         message.iterations,
@@ -43,6 +44,50 @@ workerScope.onmessage = async (event: MessageEvent<PlannerWorkerRequest>) => {
     } catch (caughtError) {
       postMessage({
         kind: "optimize-error",
+        requestId: message.requestId,
+        message: getErrorMessage(caughtError),
+      });
+    }
+    return;
+  }
+
+  if (message.kind === "budget-optimize") {
+    try {
+      const result = await optimizeOverloadBudgetSuccessWithRuntimeWasm(
+        message.targetOptionIds,
+        message.targetGrades,
+        message.moduleBudget,
+      );
+
+      postMessage({
+        kind: "budget-optimize-success",
+        requestId: message.requestId,
+        result,
+      });
+    } catch (caughtError) {
+      postMessage({
+        kind: "budget-optimize-error",
+        requestId: message.requestId,
+        message: getErrorMessage(caughtError),
+      });
+    }
+    return;
+  }
+
+  if (message.kind === "budget-simulate") {
+    try {
+      const result = runMonteCarloBudgetSimulation(message.startState, message.result, message.targetGrades, {
+        costWeights: message.costWeights,
+      });
+
+      postMessage({
+        kind: "simulate-success",
+        requestId: message.requestId,
+        result,
+      });
+    } catch (caughtError) {
+      postMessage({
+        kind: "simulate-error",
         requestId: message.requestId,
         message: getErrorMessage(caughtError),
       });

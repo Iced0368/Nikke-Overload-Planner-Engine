@@ -1,5 +1,10 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
+  readOverloadBudgetOptimizationSummary,
+  type OverloadBudgetOptimizationResult,
+  type OverloadBudgetOptimizationSummary,
+} from "../../../lib/overloadBudgetOptimizer.ts";
+import {
   OVERLOAD_GRADE_COUNT,
   defaultCostWeights,
   overloadOptions,
@@ -10,6 +15,8 @@ import {
 import {
   type OverloadOptimizationProgress,
   type OverloadPolicyOptimizationResult,
+  readForcedLockAlternatives,
+  type OverloadForcedLockAlternative,
 } from "../../../lib/overloadPolicyOptimizer.ts";
 import { type MonteCarloSimulationSummary } from "../../../lib/overloadMonteCarlo.ts";
 import {
@@ -20,6 +27,7 @@ import {
   defaultStartState,
   defaultTargetStates,
   getTargetStatePermutations,
+  isValidStartModuleLockState,
   isValidOptionTriple,
   isValidTargetOptionTriple,
   normalizeStartState,
@@ -28,25 +36,36 @@ import {
   type StartStateDraft,
   type TargetStateDraft,
 } from "../model/model";
+import { type PlannerMode } from "../components/PlannerModeSection";
 import PlannerWorker from "../workers/planner.worker?worker";
 import { type PlannerWorkerResponse } from "../workers/plannerWorkerMessages";
 
 const PLANNER_STORAGE_KEY = "overload-planner:state";
 const LEGACY_TARGET_GRADE_STORAGE_KEY = "overload-planner:target-grades";
-const PLANNER_STORAGE_VERSION = 2;
+const DEFAULT_MODULE_BUDGET = 50;
+const DEFAULT_PLANNER_MODE: PlannerMode = "classic";
+const PLANNER_STORAGE_VERSION = 4;
 
 type StoredPlannerState = {
   version: typeof PLANNER_STORAGE_VERSION;
   targetStates: TargetStateDraft[];
   targetGrades: Record<string, number>;
   costWeights: OverloadCostWeights;
+  moduleBudget: number;
+  plannerMode: PlannerMode;
 };
 
 type PlannerStateSnapshot = {
   targetStates: TargetStateDraft[];
   targetGrades: Map<string, number>;
   costWeights: OverloadCostWeights;
+  moduleBudget: number;
+  plannerMode: PlannerMode;
 };
+
+function sanitizePlannerMode(value: unknown): PlannerMode {
+  return value === "budget" ? "budget" : "classic";
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -113,6 +132,14 @@ function sanitizeCostWeights(value: unknown): OverloadCostWeights {
   };
 }
 
+function sanitizeModuleBudget(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_MODULE_BUDGET;
+  }
+
+  return Math.min(200, Math.max(0, Math.round(value)));
+}
+
 function collectTargetOptionIdsInUse(targetStates: TargetStateDraft[]) {
   const ids = new Set<string>();
 
@@ -160,6 +187,8 @@ function readStoredPlannerState(): PlannerStateSnapshot {
       targetStates: defaultTargetStates,
       targetGrades: fallbackTargetGrades,
       costWeights: defaultCostWeights,
+      moduleBudget: DEFAULT_MODULE_BUDGET,
+      plannerMode: DEFAULT_PLANNER_MODE,
     };
   }
 
@@ -170,15 +199,39 @@ function readStoredPlannerState(): PlannerStateSnapshot {
         targetStates: defaultTargetStates,
         targetGrades: fallbackTargetGrades,
         costWeights: defaultCostWeights,
+        moduleBudget: DEFAULT_MODULE_BUDGET,
+        plannerMode: DEFAULT_PLANNER_MODE,
       };
     }
 
     const parsed = JSON.parse(rawValue);
-    if (!isPlainObject(parsed) || parsed.version !== PLANNER_STORAGE_VERSION) {
+    if (!isPlainObject(parsed)) {
       return {
         targetStates: defaultTargetStates,
         targetGrades: fallbackTargetGrades,
         costWeights: defaultCostWeights,
+        moduleBudget: DEFAULT_MODULE_BUDGET,
+        plannerMode: DEFAULT_PLANNER_MODE,
+      };
+    }
+
+    if (parsed.version === 2 || parsed.version === 3) {
+      return {
+        targetStates: sanitizeTargetStates(parsed.targetStates),
+        targetGrades: sanitizeTargetGrades(parsed.targetGrades),
+        costWeights: sanitizeCostWeights(parsed.costWeights),
+        moduleBudget: DEFAULT_MODULE_BUDGET,
+        plannerMode: DEFAULT_PLANNER_MODE,
+      };
+    }
+
+    if (parsed.version !== PLANNER_STORAGE_VERSION) {
+      return {
+        targetStates: defaultTargetStates,
+        targetGrades: fallbackTargetGrades,
+        costWeights: defaultCostWeights,
+        moduleBudget: DEFAULT_MODULE_BUDGET,
+        plannerMode: DEFAULT_PLANNER_MODE,
       };
     }
 
@@ -186,12 +239,16 @@ function readStoredPlannerState(): PlannerStateSnapshot {
       targetStates: sanitizeTargetStates(parsed.targetStates),
       targetGrades: sanitizeTargetGrades(parsed.targetGrades),
       costWeights: sanitizeCostWeights(parsed.costWeights),
+      moduleBudget: sanitizeModuleBudget(parsed.moduleBudget),
+      plannerMode: sanitizePlannerMode(parsed.plannerMode),
     };
   } catch {
     return {
       targetStates: defaultTargetStates,
       targetGrades: fallbackTargetGrades,
       costWeights: defaultCostWeights,
+      moduleBudget: DEFAULT_MODULE_BUDGET,
+      plannerMode: DEFAULT_PLANNER_MODE,
     };
   }
 }
@@ -206,6 +263,8 @@ function writeStoredPlannerState(snapshot: PlannerStateSnapshot) {
     targetStates: snapshot.targetStates,
     targetGrades: Object.fromEntries(snapshot.targetGrades.entries()),
     costWeights: snapshot.costWeights,
+    moduleBudget: snapshot.moduleBudget,
+    plannerMode: snapshot.plannerMode,
   };
 
   window.localStorage.setItem(PLANNER_STORAGE_KEY, JSON.stringify(payload));
@@ -217,8 +276,10 @@ export function useOverloadPlanner() {
   const workerRef = useRef<Worker | null>(null);
   const optimizeRequestIdRef = useRef(0);
   const simulationRequestIdRef = useRef(0);
-  const policySignatureRef = useRef<string | null>(null);
-  const simulationSignatureRef = useRef<string | null>(null);
+  const budgetRequestIdRef = useRef(0);
+  const optimizeRequestSignatureRef = useRef<string | null>(null);
+  const simulationRequestSignatureRef = useRef<string | null>(null);
+  const budgetRequestSignatureRef = useRef<string | null>(null);
   const storedTargetGradeByIdRef = useRef<Map<string, number>>(new Map(initialStoredPlannerState.targetGrades));
   const [startState, setStartState] = useState<StartStateDraft>(defaultStartState);
   const [startModuleLocks, setStartModuleLocks] = useState<StartModuleLockState>(defaultStartModuleLocks);
@@ -230,6 +291,8 @@ export function useOverloadPlanner() {
     ),
   );
   const [costWeights, setCostWeights] = useState<OverloadCostWeights>(initialStoredPlannerState.costWeights);
+  const [moduleBudget, setModuleBudget] = useState(initialStoredPlannerState.moduleBudget);
+  const [plannerMode, setPlannerMode] = useState<PlannerMode>(initialStoredPlannerState.plannerMode);
   const [iterations] = useState(3000);
   const [result, setResult] = useState<OverloadPolicyOptimizationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -240,6 +303,12 @@ export function useOverloadPlanner() {
   const [simulationError, setSimulationError] = useState<string | null>(null);
   const [isSimulationRunning, setIsSimulationRunning] = useState(false);
   const [lastSimulationSignature, setLastSimulationSignature] = useState<string | null>(null);
+  const [budgetOptimizationResult, setBudgetOptimizationResult] = useState<OverloadBudgetOptimizationResult | null>(
+    null,
+  );
+  const [budgetOptimizationError, setBudgetOptimizationError] = useState<string | null>(null);
+  const [isBudgetOptimizationRunning, setIsBudgetOptimizationRunning] = useState(false);
+  const [lastBudgetOptimizationSignature, setLastBudgetOptimizationSignature] = useState<string | null>(null);
 
   const normalizedStartState = useMemo(() => normalizeStartState(startState), [startState]);
 
@@ -265,8 +334,10 @@ export function useOverloadPlanner() {
       targetStates,
       targetGrades: storedTargetGradeByIdRef.current,
       costWeights,
+      moduleBudget,
+      plannerMode,
     });
-  }, [costWeights, targetGrades, targetStates]);
+  }, [costWeights, moduleBudget, plannerMode, targetGrades, targetStates]);
 
   const targetGradeById = useMemo(
     () => new Map(targetGrades.map((target) => [target.id, target.grade])),
@@ -289,12 +360,20 @@ export function useOverloadPlanner() {
     [costWeights, iterations, targetGrades, targetStates],
   );
 
-  useEffect(() => {
-    policySignatureRef.current = policySignature;
-  }, [policySignature]);
+  const budgetSignature = useMemo(
+    () =>
+      JSON.stringify({
+        targetStates,
+        targetGrades,
+        moduleBudget,
+      }),
+    [moduleBudget, targetGrades, targetStates],
+  );
 
   const needsOptimization = result === null || lastOptimizedPolicySignature !== policySignature;
   const hasStaleResult = result !== null && needsOptimization;
+  const hasStaleBudgetOptimization =
+    budgetOptimizationResult !== null && lastBudgetOptimizationSignature !== budgetSignature;
 
   useEffect(() => {
     const worker = new PlannerWorker();
@@ -321,7 +400,7 @@ export function useOverloadPlanner() {
 
         startTransition(() => {
           setResult(message.result);
-          setLastOptimizedPolicySignature(policySignatureRef.current);
+          setLastOptimizedPolicySignature(optimizeRequestSignatureRef.current);
           setIsRunning(false);
           setOptimizationProgress(null);
         });
@@ -348,8 +427,33 @@ export function useOverloadPlanner() {
 
         startTransition(() => {
           setSimulationResult(message.result);
-          setLastSimulationSignature(simulationSignatureRef.current);
+          setLastSimulationSignature(simulationRequestSignatureRef.current);
           setIsSimulationRunning(false);
+        });
+        return;
+      }
+
+      if (message.kind === "budget-optimize-success") {
+        if (message.requestId !== budgetRequestIdRef.current) {
+          return;
+        }
+
+        startTransition(() => {
+          setBudgetOptimizationResult(message.result);
+          setLastBudgetOptimizationSignature(budgetRequestSignatureRef.current);
+          setIsBudgetOptimizationRunning(false);
+        });
+        return;
+      }
+
+      if (message.kind === "budget-optimize-error") {
+        if (message.requestId !== budgetRequestIdRef.current) {
+          return;
+        }
+
+        startTransition(() => {
+          setBudgetOptimizationError(message.message);
+          setIsBudgetOptimizationRunning(false);
         });
         return;
       }
@@ -371,20 +475,40 @@ export function useOverloadPlanner() {
   }, []);
 
   const simulationSignature = useMemo(() => {
-    if (!result || hasStaleResult || !lastOptimizedPolicySignature) {
+    if (plannerMode === "classic") {
+      if (!result || hasStaleResult || !lastOptimizedPolicySignature) {
+        return null;
+      }
+
+      return JSON.stringify({
+        mode: plannerMode,
+        optimizedPolicySignature: lastOptimizedPolicySignature,
+        binaryStartState,
+        startModuleLocks,
+      });
+    }
+
+    if (!budgetOptimizationResult || hasStaleBudgetOptimization || !lastBudgetOptimizationSignature) {
       return null;
     }
 
     return JSON.stringify({
-      optimizedPolicySignature: lastOptimizedPolicySignature,
+      mode: plannerMode,
+      optimizedBudgetSignature: lastBudgetOptimizationSignature,
       binaryStartState,
       startModuleLocks,
     });
-  }, [binaryStartState, hasStaleResult, lastOptimizedPolicySignature, result, startModuleLocks]);
-
-  useEffect(() => {
-    simulationSignatureRef.current = simulationSignature;
-  }, [simulationSignature]);
+  }, [
+    binaryStartState,
+    budgetOptimizationResult,
+    hasStaleBudgetOptimization,
+    hasStaleResult,
+    lastBudgetOptimizationSignature,
+    lastOptimizedPolicySignature,
+    plannerMode,
+    result,
+    startModuleLocks,
+  ]);
 
   const detailedSimulationResult = useMemo(() => {
     if (!simulationSignature || simulationSignature !== lastSimulationSignature) {
@@ -398,6 +522,39 @@ export function useOverloadPlanner() {
     () => (result && !hasStaleResult ? readStateValue(result, binaryStartState, startModuleLocks) : null),
     [binaryStartState, hasStaleResult, result, startModuleLocks],
   );
+
+  const forcedLockAlternatives = useMemo<OverloadForcedLockAlternative[]>(() => {
+    if (!result || hasStaleResult || !currentStateValue || plannerMode !== "classic") {
+      return [];
+    }
+
+    return readForcedLockAlternatives(
+      result,
+      buildSimulationStartState(binaryStartState, startModuleLocks),
+      targetGrades,
+      costWeights,
+    );
+  }, [
+    binaryStartState,
+    costWeights,
+    currentStateValue,
+    hasStaleResult,
+    plannerMode,
+    result,
+    startModuleLocks,
+    targetGrades,
+  ]);
+
+  const displayedBudgetOptimizationResult = useMemo<OverloadBudgetOptimizationSummary | null>(() => {
+    if (!budgetOptimizationResult || hasStaleBudgetOptimization) {
+      return null;
+    }
+
+    return readOverloadBudgetOptimizationSummary(
+      budgetOptimizationResult,
+      buildSimulationStartState(binaryStartState, startModuleLocks),
+    );
+  }, [binaryStartState, budgetOptimizationResult, hasStaleBudgetOptimization, startModuleLocks]);
 
   const updateStartStateSlot = (slot: 0 | 1 | 2, value: number) => {
     setStartState((current) => {
@@ -448,6 +605,17 @@ export function useOverloadPlanner() {
       ...current,
       lockKey: Number((current.module / normalizedKeysPerModule).toFixed(6)),
     }));
+  };
+
+  const updateModuleBudget = (value: number) => {
+    const normalizedBudget = Number.isFinite(value)
+      ? Math.min(200, Math.max(0, Math.round(value)))
+      : DEFAULT_MODULE_BUDGET;
+    setModuleBudget(normalizedBudget);
+  };
+
+  const updatePlannerMode = (mode: PlannerMode) => {
+    setPlannerMode(mode);
   };
 
   const updateTargetStateSlot = (targetIndex: number, slot: 0 | 1 | 2, value: number) => {
@@ -505,18 +673,42 @@ export function useOverloadPlanner() {
   };
 
   const runDetailedSimulation = () => {
-    if (!result || hasStaleResult || !simulationSignature || !workerRef.current) {
+    if (!simulationSignature || !workerRef.current) {
       return;
     }
 
     setSimulationError(null);
     setIsSimulationRunning(true);
     simulationRequestIdRef.current += 1;
+    simulationRequestSignatureRef.current = simulationSignature;
+
+    if (plannerMode === "classic") {
+      if (!result || hasStaleResult) {
+        setIsSimulationRunning(false);
+        return;
+      }
+
+      workerRef.current.postMessage({
+        kind: "simulate",
+        requestId: simulationRequestIdRef.current,
+        startState: buildSimulationStartState(binaryStartState, startModuleLocks),
+        result,
+        targetGrades,
+        costWeights,
+      });
+      return;
+    }
+
+    if (!budgetOptimizationResult || hasStaleBudgetOptimization) {
+      setIsSimulationRunning(false);
+      return;
+    }
+
     workerRef.current.postMessage({
-      kind: "simulate",
+      kind: "budget-simulate",
       requestId: simulationRequestIdRef.current,
       startState: buildSimulationStartState(binaryStartState, startModuleLocks),
-      result,
+      result: budgetOptimizationResult,
       targetGrades,
       costWeights,
     });
@@ -555,6 +747,7 @@ export function useOverloadPlanner() {
       percent: 0,
     });
     optimizeRequestIdRef.current += 1;
+    optimizeRequestSignatureRef.current = policySignature;
     workerRef.current.postMessage({
       kind: "optimize",
       requestId: optimizeRequestIdRef.current,
@@ -567,11 +760,62 @@ export function useOverloadPlanner() {
     });
   };
 
+  const runBudgetOptimization = () => {
+    setBudgetOptimizationError(null);
+
+    if (!isValidOptionTriple([normalizedStartState[0], normalizedStartState[1], normalizedStartState[2]])) {
+      setBudgetOptimizationError("시작 상태의 옵션 조합이 유효하지 않습니다. 중복 옵션은 허용되지 않습니다.");
+      return;
+    }
+
+    if (
+      !isValidStartModuleLockState(
+        [normalizedStartState[0], normalizedStartState[1], normalizedStartState[2]],
+        startModuleLocks,
+      )
+    ) {
+      setBudgetOptimizationError("현재 시작 모듈 잠금 조합이 유효하지 않습니다.");
+      return;
+    }
+
+    if (targetStates.length === 0) {
+      setBudgetOptimizationError("목표 상태를 하나 이상 추가해야 합니다.");
+      return;
+    }
+
+    for (const [index, targetState] of targetStates.entries()) {
+      if (!isValidTargetOptionTriple(targetState)) {
+        setBudgetOptimizationError(`${index + 1}번째 목표 상태의 옵션 조합이 유효하지 않습니다.`);
+        return;
+      }
+    }
+
+    if (!workerRef.current) {
+      setBudgetOptimizationError("계산 워커를 초기화하지 못했습니다.");
+      return;
+    }
+
+    setIsBudgetOptimizationRunning(true);
+    budgetRequestIdRef.current += 1;
+    budgetRequestSignatureRef.current = budgetSignature;
+    workerRef.current.postMessage({
+      kind: "budget-optimize",
+      requestId: budgetRequestIdRef.current,
+      targetOptionIds: targetStates.map(
+        (targetState) => targetState.map((optionIndex) => overloadOptions[optionIndex]?.id) as OverloadOptionIds,
+      ),
+      targetGrades,
+      moduleBudget,
+    });
+  };
+
   return {
     startState: normalizedStartState,
+    plannerMode,
     startModuleLocks,
     costWeights,
     lockKeysPerModule,
+    moduleBudget,
     targetStates,
     targetGrades,
     iterations,
@@ -583,6 +827,11 @@ export function useOverloadPlanner() {
     hasStaleResult,
     binaryStartState,
     currentStateValue,
+    forcedLockAlternatives,
+    budgetOptimizationResult: displayedBudgetOptimizationResult,
+    budgetOptimizationError,
+    isBudgetOptimizationRunning,
+    hasStaleBudgetOptimization,
     detailedSimulationResult,
     simulationError,
     isSimulationRunning,
@@ -590,6 +839,8 @@ export function useOverloadPlanner() {
     updateStartStateGrade,
     updateStartModuleLock,
     updateLockKeysPerModule,
+    updateModuleBudget,
+    updatePlannerMode,
     updateTargetStateSlot,
     updateTargetGrade,
     addTargetState,
@@ -597,6 +848,7 @@ export function useOverloadPlanner() {
     addTargetStatePermutations,
     removeTargetState,
     runOptimizer,
+    runBudgetOptimization,
     runDetailedSimulation,
   };
 }

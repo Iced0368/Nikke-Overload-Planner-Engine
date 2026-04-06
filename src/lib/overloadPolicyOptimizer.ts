@@ -68,6 +68,15 @@ export type OverloadExpectedCosts = {
   lockKey: number;
 };
 
+export type OverloadForcedLockAlternative = {
+  protectedMask: SlotLockState;
+  action: Exclude<OverloadAction, { type: "done" }>;
+  cost: number;
+  expectedCosts: OverloadExpectedCosts;
+  deltaFromOptimal: number;
+  isCurrentOptimal: boolean;
+};
+
 export type OverloadStateTensor<T> = T[][][][][][][][][];
 export type OverloadStateValue = { cost: number; expectedCosts: OverloadExpectedCosts; action: OverloadAction };
 
@@ -84,7 +93,7 @@ export type OverloadOptimizationProgress = {
   percent: number;
 };
 
-type OptimizeOverloadPolicyOptions = {
+export type OptimizeOverloadPolicyOptions = {
   onProgress?: (progress: OverloadOptimizationProgress) => void;
   yieldEveryIterations?: number;
 };
@@ -162,6 +171,320 @@ function buildActionFromMasks(actionType: number, moduleMask: number, keyMask: n
     moduleLock: decodeBooleanMask(moduleMask),
     keyLock: decodeBooleanMask(keyMask),
   };
+}
+
+function buildRequiredGradeSuccessProbabilities(targetGradeTargets: OverloadOptionTarget[]) {
+  const optionIndexById = new Map<string, number>();
+  const gradeTailProbabilityByThreshold = Array<number>(OVERLOAD_GRADE_COUNT + 1).fill(0);
+
+  for (let index = 1; index < overloadOptions.length; index++) {
+    const option = overloadOptions[index];
+    if (option) {
+      optionIndexById.set(option.id, index);
+    }
+  }
+
+  for (let grade = OVERLOAD_GRADE_COUNT - 1; grade >= 0; grade--) {
+    gradeTailProbabilityByThreshold[grade] =
+      gradeTailProbabilityByThreshold[grade + 1]! + overloadGradeProbabilities[grade]!;
+  }
+
+  const requiredGradeByOption = Array(OVERLOAD_OPTION_COUNT + 1).fill(0);
+  for (const target of targetGradeTargets) {
+    const optionIndex = optionIndexById.get(target.id);
+    if (optionIndex !== undefined) {
+      requiredGradeByOption[optionIndex] = target.grade;
+    }
+  }
+
+  return requiredGradeByOption.map((requiredGrade) => {
+    const successProbability = gradeTailProbabilityByThreshold[requiredGrade]!;
+    return [1 - successProbability, successProbability] as [number, number];
+  });
+}
+
+function readStateValueFromExactState(
+  stateValues: OverloadStateTensor<OverloadStateValue>,
+  [o1, o2, o3, g1, g2, g3, m1, m2, m3]: OverloadState,
+) {
+  return stateValues[o1][o2][o3][g1][g2][g3][m1][m2][m3];
+}
+
+function masksMatchAction(action: OverloadAction, actionType: number, nextModuleMask: number, keyMask: number) {
+  if (action.type === "done") {
+    return false;
+  }
+
+  if (
+    (actionType === ACTION_OPTION && action.type !== "option") ||
+    (actionType === ACTION_GRADE && action.type !== "grade")
+  ) {
+    return false;
+  }
+
+  return (
+    buildMask([Number(action.moduleLock[0]), Number(action.moduleLock[1]), Number(action.moduleLock[2])]) ===
+      nextModuleMask &&
+    buildMask([Number(action.keyLock[0]), Number(action.keyLock[1]), Number(action.keyLock[2])]) === keyMask
+  );
+}
+
+export function readForcedLockAlternatives(
+  result: OverloadPolicyOptimizationResult,
+  state: OverloadState,
+  targetGradeTargets: OverloadOptionTarget[],
+  costWeights: OverloadCostWeights = defaultCostWeights,
+): OverloadForcedLockAlternative[] {
+  const currentStateValue = readStateValueFromExactState(result.stateValues, state);
+  if (currentStateValue.action.type === "done") {
+    return [];
+  }
+
+  const currentModuleMask = moduleMaskFromState(state);
+  const [o1, o2, o3, g1, g2, g3] = state;
+  const unresolvedSlotMask =
+    (o1 !== 0 && g1 === 0 ? 1 : 0) | (o2 !== 0 && g2 === 0 ? 2 : 0) | (o3 !== 0 && g3 === 0 ? 4 : 0);
+  const stateKey = encodeStateKey(state);
+  const meetsTargetGradeProbabilities = buildRequiredGradeSuccessProbabilities(targetGradeTargets);
+  const alternatives: OverloadForcedLockAlternative[] = [];
+
+  const chooseBetterAlternative = (
+    current: OverloadForcedLockAlternative | null,
+    candidate: OverloadForcedLockAlternative,
+  ) => {
+    if (!current) {
+      return candidate;
+    }
+
+    if (candidate.cost < current.cost - 1e-9) {
+      return candidate;
+    }
+
+    if (Math.abs(candidate.cost - current.cost) <= 1e-9) {
+      if (candidate.expectedCosts.lockKey < current.expectedCosts.lockKey - 1e-9) {
+        return candidate;
+      }
+
+      if (
+        Math.abs(candidate.expectedCosts.lockKey - current.expectedCosts.lockKey) <= 1e-9 &&
+        candidate.expectedCosts.module < current.expectedCosts.module - 1e-9
+      ) {
+        return candidate;
+      }
+    }
+
+    return current;
+  };
+
+  const buildAlternative = (
+    actionType: number,
+    nextModuleMask: number,
+    keyMask: number,
+    sameWeight: number,
+    totalWeight: number,
+    externalWeightedCostSum: number,
+    externalModuleCostSum: number,
+    externalLockKeyCostSum: number,
+  ): OverloadForcedLockAlternative | null => {
+    const leaveWeight = totalWeight - sameWeight;
+    if (leaveWeight <= 1e-12) {
+      return null;
+    }
+
+    const protectedMask = nextModuleMask | keyMask;
+    const actionCosts = buildActionCosts(
+      currentModuleMask,
+      nextModuleMask,
+      keyMask,
+      countBits(protectedMask),
+      costWeights,
+    );
+    const expectedCosts = {
+      module: (actionCosts.moduleCost * totalWeight + externalModuleCostSum) / leaveWeight,
+      lockKey: (actionCosts.lockKeyCost * totalWeight + externalLockKeyCostSum) / leaveWeight,
+    };
+    const cost = (actionCosts.weightedCost * totalWeight + externalWeightedCostSum) / leaveWeight;
+
+    return {
+      protectedMask: decodeBooleanMask(protectedMask),
+      action: buildActionFromMasks(actionType, nextModuleMask, keyMask) as Exclude<OverloadAction, { type: "done" }>,
+      cost,
+      expectedCosts,
+      deltaFromOptimal: cost - currentStateValue.cost,
+      isCurrentOptimal: masksMatchAction(currentStateValue.action, actionType, nextModuleMask, keyMask),
+    };
+  };
+
+  const evaluateGradeAction = (protectedMask: number, nextModuleMask: number) => {
+    const keyMask = protectedMask ^ nextModuleMask;
+    let sameWeight = 0;
+    let totalWeight = 0;
+    let externalWeightedCostSum = 0;
+    let externalModuleCostSum = 0;
+    let externalLockKeyCostSum = 0;
+
+    for (let gradeMask = 0; gradeMask < GRADE_MASK_COUNT; gradeMask++) {
+      const ng1 = gradeMask & 1 ? 1 : 0;
+      const ng2 = gradeMask & 2 ? 1 : 0;
+      const ng3 = gradeMask & 4 ? 1 : 0;
+      if ((protectedMask & 1) !== 0 && ng1 !== g1) continue;
+      if ((protectedMask & 2) !== 0 && ng2 !== g2) continue;
+      if ((protectedMask & 4) !== 0 && ng3 !== g3) continue;
+
+      let probability = 1;
+      if ((protectedMask & 1) === 0) probability *= meetsTargetGradeProbabilities[o1]![ng1]!;
+      if ((protectedMask & 2) === 0) probability *= meetsTargetGradeProbabilities[o2]![ng2]!;
+      if ((protectedMask & 4) === 0) probability *= meetsTargetGradeProbabilities[o3]![ng3]!;
+      if (probability <= 0) continue;
+
+      totalWeight += probability;
+      const nextState = [
+        o1,
+        o2,
+        o3,
+        ng1,
+        ng2,
+        ng3,
+        Number(Boolean(nextModuleMask & 1)),
+        Number(Boolean(nextModuleMask & 2)),
+        Number(Boolean(nextModuleMask & 4)),
+      ] as OverloadState;
+      if (encodeStateKey(nextState) === stateKey) {
+        sameWeight += probability;
+        continue;
+      }
+
+      const nextStateValue = readStateValueFromExactState(result.stateValues, nextState);
+      externalWeightedCostSum += probability * nextStateValue.cost;
+      externalModuleCostSum += probability * nextStateValue.expectedCosts.module;
+      externalLockKeyCostSum += probability * nextStateValue.expectedCosts.lockKey;
+    }
+
+    return buildAlternative(
+      ACTION_GRADE,
+      nextModuleMask,
+      keyMask,
+      sameWeight,
+      totalWeight,
+      externalWeightedCostSum,
+      externalModuleCostSum,
+      externalLockKeyCostSum,
+    );
+  };
+
+  const evaluateOptionAction = (protectedMask: number, nextModuleMask: number) => {
+    const keyMask = protectedMask ^ nextModuleMask;
+    let sameWeight = 0;
+    let totalWeight = 0;
+    let externalWeightedCostSum = 0;
+    let externalModuleCostSum = 0;
+    let externalLockKeyCostSum = 0;
+
+    for (const candidateState of result.states) {
+      if (
+        candidateState[6] !== Number(Boolean(nextModuleMask & 1)) ||
+        candidateState[7] !== Number(Boolean(nextModuleMask & 2)) ||
+        candidateState[8] !== Number(Boolean(nextModuleMask & 4))
+      ) {
+        continue;
+      }
+
+      let weight = 1;
+      for (let slot = 0; slot < 3; slot++) {
+        const currentOption = state[slot]!;
+        const currentGrade = state[slot + 3]!;
+        const nextOption = candidateState[slot]!;
+        const nextGrade = candidateState[slot + 3]!;
+
+        if (((protectedMask >> slot) & 1) !== 0) {
+          if (currentOption !== nextOption || currentGrade !== nextGrade) {
+            weight = 0;
+            break;
+          }
+          continue;
+        }
+
+        if (nextOption === 0) {
+          if (nextGrade !== 0) {
+            weight = 0;
+            break;
+          }
+
+          weight *= 1 - slotOptionProbabilities[slot]!;
+          continue;
+        }
+
+        weight *=
+          slotOptionProbabilities[slot]! *
+          overloadOptions[nextOption]!.probability *
+          meetsTargetGradeProbabilities[nextOption]![nextGrade]!;
+      }
+
+      if (weight <= 0) {
+        continue;
+      }
+
+      totalWeight += weight;
+      if (encodeStateKey(candidateState) === stateKey) {
+        sameWeight += weight;
+        continue;
+      }
+
+      const nextStateValue = readStateValueFromExactState(result.stateValues, candidateState);
+      externalWeightedCostSum += weight * nextStateValue.cost;
+      externalModuleCostSum += weight * nextStateValue.expectedCosts.module;
+      externalLockKeyCostSum += weight * nextStateValue.expectedCosts.lockKey;
+    }
+
+    return buildAlternative(
+      ACTION_OPTION,
+      nextModuleMask,
+      keyMask,
+      sameWeight,
+      totalWeight,
+      externalWeightedCostSum,
+      externalModuleCostSum,
+      externalLockKeyCostSum,
+    );
+  };
+
+  for (const protectedMask of MASKS) {
+    if (!canUseMask([o1, o2, o3], protectedMask)) {
+      continue;
+    }
+
+    if ((protectedMask & unresolvedSlotMask) !== 0) {
+      continue;
+    }
+
+    let bestAlternative: OverloadForcedLockAlternative | null = null;
+    for (const nextModuleMask of MASKS) {
+      if (!canUseMask([o1, o2, o3], nextModuleMask)) {
+        continue;
+      }
+
+      if ((nextModuleMask & protectedMask) !== nextModuleMask) {
+        continue;
+      }
+
+      const gradeAlternative = evaluateGradeAction(protectedMask, nextModuleMask);
+      if (gradeAlternative) {
+        bestAlternative = chooseBetterAlternative(bestAlternative, gradeAlternative);
+      }
+
+      const optionAlternative = evaluateOptionAction(protectedMask, nextModuleMask);
+      if (optionAlternative) {
+        bestAlternative = chooseBetterAlternative(bestAlternative, optionAlternative);
+      }
+    }
+
+    if (bestAlternative) {
+      alternatives.push(bestAlternative);
+    }
+  }
+
+  alternatives.sort((left, right) => left.cost - right.cost);
+  return alternatives;
 }
 
 // 외부 API는 기존 9차원 tensor 형태를 유지하므로 마지막 반환용 구조도 그대로 제공한다.

@@ -107,6 +107,61 @@
   white-space: nowrap;
 }
 
+.mode-selector-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.28rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  justify-self: start;
+}
+
+.mode-selector-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.4rem;
+  padding: 0.48rem 0.82rem;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: rgba(233, 238, 247, 0.72);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.mode-selector-pill:hover {
+  transform: translateY(-1px);
+  color: rgba(244, 247, 252, 0.9);
+}
+
+.mode-selector-pill.is-active {
+  border-color: rgba(245, 146, 79, 0.42);
+  background: linear-gradient(180deg, rgba(245, 146, 79, 0.14), rgba(255, 255, 255, 0.04));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  color: #fff0d6;
+}
+
+.mode-selector-caption {
+  margin: -0.05rem 0 0;
+  color: rgba(233, 238, 247, 0.62);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.budget-config-caption {
+  justify-self: end;
+  text-align: right;
+}
+
 .toggle-chip,
 .primary-button,
 .secondary-button,
@@ -251,6 +306,12 @@ input {
 
   .result-panel {
     order: 1;
+  }
+
+  .mode-selector-group {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
   }
 
   .form-panel {
