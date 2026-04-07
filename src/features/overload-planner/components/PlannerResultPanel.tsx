@@ -568,15 +568,6 @@ export function PlannerResultPanel({
               simulated: detailedSimulationResult.sampleMeanLockKeyCost,
               accentClassName: "is-lockkey",
             },
-            {
-              key: "module",
-              label: "모듈 예산",
-              expected: moduleBudget,
-              simulated: detailedSimulationResult.sampleMeanModuleCost,
-              accentClassName: "is-module",
-              expectedLabel: "예산",
-              simulatedLabel: "시뮬 평균",
-            },
           ]
         : null
     : null;
