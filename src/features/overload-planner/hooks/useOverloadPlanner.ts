@@ -533,6 +533,9 @@ export function useOverloadPlanner() {
     return readForcedLockAlternatives(
       result,
       buildSimulationStartState(binaryStartState, startModuleLocks),
+      targetStates.map(
+        (targetState) => targetState.map((optionIndex) => overloadOptions[optionIndex]?.id) as OverloadOptionIds,
+      ),
       targetGrades,
       costWeights,
     );
@@ -544,6 +547,7 @@ export function useOverloadPlanner() {
     plannerMode,
     result,
     startModuleLocks,
+    targetStates,
     targetGrades,
   ]);
 

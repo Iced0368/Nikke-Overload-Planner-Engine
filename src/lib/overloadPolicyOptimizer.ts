@@ -232,6 +232,7 @@ function masksMatchAction(action: OverloadAction, actionType: number, nextModule
 export function readForcedLockAlternatives(
   result: OverloadPolicyOptimizationResult,
   state: OverloadState,
+  targetOptionIds: OverloadOptionIds[],
   targetGradeTargets: OverloadOptionTarget[],
   costWeights: OverloadCostWeights = defaultCostWeights,
 ): OverloadForcedLockAlternative[] {
@@ -247,6 +248,28 @@ export function readForcedLockAlternatives(
   const stateKey = encodeStateKey(state);
   const meetsTargetGradeProbabilities = buildRequiredGradeSuccessProbabilities(targetGradeTargets);
   const alternatives: OverloadForcedLockAlternative[] = [];
+
+  const isProtectedMaskCompatibleWithTargets = (protectedMask: number) => {
+    if (protectedMask === 0) {
+      return true;
+    }
+
+    return targetOptionIds.some((targetState) => {
+      for (let slot = 0; slot < 3; slot++) {
+        if (((protectedMask >> slot) & 1) === 0) {
+          continue;
+        }
+
+        const currentOptionId = overloadOptions[state[slot]]?.id;
+        const targetOptionId = targetState[slot];
+        if (targetOptionId !== undefined && currentOptionId !== targetOptionId) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  };
 
   const chooseBetterAlternative = (
     current: OverloadForcedLockAlternative | null,
@@ -496,6 +519,10 @@ export function readForcedLockAlternatives(
 
   for (const protectedMask of MASKS) {
     if (!canUseMask([o1, o2, o3], protectedMask)) {
+      continue;
+    }
+
+    if (!isProtectedMaskCompatibleWithTargets(protectedMask)) {
       continue;
     }
 
